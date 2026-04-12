@@ -1,0 +1,20 @@
+name: hermes-music
+version: 0.1.0
+description: "Music generation for Hermes Agent — Suno AI generation, MIDI composition, library management"
+author: buckster123
+requires_env:
+  - name: SUNO_API_KEY
+    description: "API key from sunoapi.org for music generation"
+    required: true
+provides_tools:
+  - music_generate
+  - music_status
+  - music_result
+  - music_list
+  - music_favorite
+  - music_library
+  - music_search
+  - music_play
+  - midi_create
+  - music_compose
+provides_hooks: []
