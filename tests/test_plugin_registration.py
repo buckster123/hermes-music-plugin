@@ -12,7 +12,7 @@ class TestRegister:
         """register() should register all 10 tools."""
         ctx = MagicMock()
         hermes_music.register(ctx)
-        assert ctx.register_tool.call_count == 10
+        assert ctx.register_tool.call_count == 12
 
     def test_register_tool_names(self):
         """All expected tool names are registered."""
@@ -23,7 +23,7 @@ class TestRegister:
         expected = {
             "music_generate", "music_status", "music_result", "music_list",
             "music_favorite", "music_library", "music_search", "music_play",
-            "midi_create", "music_compose",
+            "music_stop", "music_delete", "midi_create", "music_compose",
         }
         assert registered_names == expected
 
@@ -51,7 +51,7 @@ class TestRegister:
         hermes_music.register(ctx)
 
         for call in ctx.register_tool.call_args_list:
-            if call.kwargs["name"] != "midi_create":
+            if call.kwargs["name"] not in ("midi_create", "music_stop"):
                 assert "SUNO_API_KEY" in call.kwargs["requires_env"]
 
     def test_schemas_have_required_fields(self):

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-music"
-version = "0.1.0"
+version = "0.2.0"
 description = "Music generation plugin for Hermes Agent — Suno AI, MIDI composition, and music library management"
 readme = "README.md"
 license = "MIT"

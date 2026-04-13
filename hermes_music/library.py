@@ -2,14 +2,31 @@
 Music Library for Hermes Music Plugin
 
 Browse, search, favorite, and play songs from the music library.
+Track-aware: each generation produces multiple tracks with independent curation.
 """
 
 import logging
 from typing import Any, Dict, List, Optional
 
-from .tasks import MusicTaskManager, TaskStatus
+from .tasks import MusicTaskManager, MusicTask, TrackInfo, TaskStatus
+from .player import play_audio, stop_playback, is_playing, find_player
 
 logger = logging.getLogger(__name__)
+
+
+def _track_summary(task: MusicTask) -> List[Dict[str, Any]]:
+    """Build a summary list of tracks for a task."""
+    tracks = []
+    for i, t in enumerate(task.tracks, 1):
+        tracks.append({
+            "track": i,
+            "file": t.file,
+            "duration": t.duration,
+            "favorite": t.favorite,
+            "archived": t.archived,
+            "play_count": t.play_count,
+        })
+    return tracks
 
 
 def browse_library(
@@ -54,6 +71,8 @@ def browse_library(
                 "duration": t.duration,
                 "audio_file": t.audio_file,
                 "is_instrumental": t.is_instrumental,
+                "track_count": t.track_count,
+                "tracks": _track_summary(t),
                 "created_at": t.created_at,
             })
 
@@ -97,6 +116,8 @@ def search_songs(
                 "favorite": task.favorite,
                 "duration": task.duration,
                 "audio_file": task.audio_file,
+                "track_count": task.track_count,
+                "tracks": _track_summary(task),
                 "prompt_preview": task.prompt[:100] + ("..." if len(task.prompt) > 100 else ""),
                 "created_at": task.created_at,
             })
@@ -116,28 +137,53 @@ def search_songs(
 def toggle_favorite(
     manager: MusicTaskManager,
     task_id: str,
+    track: Optional[int] = None,
     favorite: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    """Toggle or set favorite status for a song."""
+    """Toggle or set favorite status for a song or specific track.
+
+    Args:
+        task_id: The task to modify.
+        track: 1-indexed track number. If None, toggles the task-level favorite.
+        favorite: Explicit value. If None, toggles current state.
+    """
     try:
         task = manager.get_task(task_id)
         if not task:
             return {"success": False, "error": f"Task {task_id} not found"}
 
-        if favorite is not None:
-            task.favorite = favorite
+        if track is not None:
+            # Track-level favorite
+            ti = task.get_track(track)
+            if not ti:
+                return {"success": False, "error": f"Track {track} not found (task has {task.track_count} tracks)"}
+            if favorite is not None:
+                ti.favorite = favorite
+            else:
+                ti.favorite = not ti.favorite
+            manager._save_tasks()
+            return {
+                "success": True,
+                "task_id": task_id,
+                "track": track,
+                "title": task.title,
+                "favorite": ti.favorite,
+                "message": f"{'⭐ Favorited' if ti.favorite else '☆ Unfavorited'}: {task.title} (track {track})",
+            }
         else:
-            task.favorite = not task.favorite
-
-        manager._save_tasks()
-
-        return {
-            "success": True,
-            "task_id": task_id,
-            "title": task.title,
-            "favorite": task.favorite,
-            "message": f"{'⭐ Favorited' if task.favorite else '☆ Unfavorited'}: {task.title}",
-        }
+            # Task-level favorite
+            if favorite is not None:
+                task.favorite = favorite
+            else:
+                task.favorite = not task.favorite
+            manager._save_tasks()
+            return {
+                "success": True,
+                "task_id": task_id,
+                "title": task.title,
+                "favorite": task.favorite,
+                "message": f"{'⭐ Favorited' if task.favorite else '☆ Unfavorited'}: {task.title}",
+            }
 
     except Exception as e:
         logger.error("Error toggling favorite: %s", e)
@@ -147,8 +193,14 @@ def toggle_favorite(
 def play_song(
     manager: MusicTaskManager,
     task_id: str,
+    track: int = 1,
 ) -> Dict[str, Any]:
-    """Mark a song as played and return file path."""
+    """Play a specific track from a song using local audio player.
+
+    Args:
+        task_id: The task to play.
+        track: 1-indexed track number (default: 1).
+    """
     try:
         task = manager.get_task(task_id)
         if not task:
@@ -160,6 +212,46 @@ def play_song(
                 "error": f"Song not ready. Status: {task.status.value}",
             }
 
+        ti = task.get_track(track)
+        if not ti:
+            return {
+                "success": False,
+                "error": f"Track {track} not found (task has {task.track_count} tracks)",
+            }
+
+        if ti.archived:
+            return {
+                "success": False,
+                "error": f"Track {track} is archived",
+            }
+
+        if not ti.file:
+            return {"success": False, "error": f"Track {track} has no audio file"}
+
+        # Play audio (auto-stops previous)
+        play_result = play_audio(ti.file, auto_stop=True)
+
+        if not play_result.get("success"):
+            # Fall back to just returning the path (for MEDIA: delivery)
+            ti.play_count += 1
+            task.play_count += 1
+            manager._save_tasks()
+            return {
+                "success": True,
+                "task_id": task_id,
+                "title": task.title,
+                "track": track,
+                "track_count": task.track_count,
+                "audio_file": ti.file,
+                "duration": ti.duration,
+                "play_count": ti.play_count,
+                "player": None,
+                "player_error": play_result.get("error"),
+                "message": f"Now playing: {task.title} (track {track}/{task.track_count})",
+            }
+
+        # Update play counts
+        ti.play_count += 1
         task.play_count += 1
         manager._save_tasks()
 
@@ -167,10 +259,14 @@ def play_song(
             "success": True,
             "task_id": task_id,
             "title": task.title,
-            "audio_file": task.audio_file,
-            "duration": task.duration,
-            "play_count": task.play_count,
-            "message": f"Now playing: {task.title}",
+            "track": track,
+            "track_count": task.track_count,
+            "audio_file": ti.file,
+            "duration": ti.duration,
+            "play_count": ti.play_count,
+            "player": play_result.get("player"),
+            "pid": play_result.get("pid"),
+            "message": f"Now playing: {task.title} (track {track}/{task.track_count}) via {play_result.get('player')}",
         }
 
     except Exception as e:

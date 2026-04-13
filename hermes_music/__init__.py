@@ -5,16 +5,17 @@ Hermes Music Plugin
 Music generation for Hermes Agent — Suno AI generation, MIDI composition,
 and music library management.
 
-Provides 10 tools in the "music" toolset:
+Provides 12 tools in the "music" toolset:
   - music_generate, music_status, music_result, music_list
   - music_favorite, music_library, music_search, music_play
+  - music_stop, music_delete
   - midi_create, music_compose
 
 Install: pip install hermes-music
 Config:  SUNO_API_KEY in ~/.hermes/.env
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 import json
 import logging
@@ -70,6 +71,11 @@ def _check_midi_available() -> bool:
         return False
 
 
+def _check_always() -> bool:
+    """Tools that always work (music_stop, etc.)."""
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Tool handlers — thin wrappers that return JSON strings
 # ---------------------------------------------------------------------------
@@ -108,7 +114,7 @@ def _handle_music_generate(args: dict, **kw) -> str:
                 "duration": task.duration,
                 "tracks": result.get("tracks", []),
                 "track_count": result.get("track_count", 1),
-                "message": f"Music generated: {task.title} ({task.duration:.0f}s)",
+                "message": f"Music generated: {task.title} ({task.duration:.0f}s) — {result.get('track_count', 1)} tracks",
             })
         else:
             return json.dumps({
@@ -152,6 +158,7 @@ def _handle_music_status(args: dict, **kw) -> str:
         "title": task.title,
         "elapsed": elapsed,
         "model": task.model,
+        "track_count": task.track_count,
     })
 
 
@@ -170,6 +177,18 @@ def _handle_music_result(args: dict, **kw) -> str:
             "progress": task.progress,
         })
 
+    tracks = []
+    for i, t in enumerate(task.tracks, 1):
+        tracks.append({
+            "track": i,
+            "file": t.file,
+            "duration": t.duration,
+            "clip_id": t.clip_id,
+            "audio_url": t.audio_url,
+            "favorite": t.favorite,
+            "archived": t.archived,
+        })
+
     return json.dumps({
         "task_id": task.task_id,
         "title": task.title,
@@ -179,6 +198,8 @@ def _handle_music_result(args: dict, **kw) -> str:
         "clip_id": task.clip_id,
         "model": task.model,
         "is_instrumental": task.is_instrumental,
+        "track_count": task.track_count,
+        "tracks": tracks,
     })
 
 
@@ -197,6 +218,7 @@ def _handle_music_list(args: dict, **kw) -> str:
                 "duration": t.duration,
                 "audio_file": t.audio_file,
                 "agent_id": t.agent_id,
+                "track_count": t.track_count,
                 "created_at": t.created_at,
             }
             for t in tasks
@@ -212,6 +234,7 @@ def _handle_music_favorite(args: dict, **kw) -> str:
     return json.dumps(toggle_favorite(
         manager,
         task_id=args.get("task_id", ""),
+        track=args.get("track"),
         favorite=args.get("favorite"),
     ))
 
@@ -244,7 +267,42 @@ def _handle_music_play(args: dict, **kw) -> str:
     return json.dumps(play_song(
         manager,
         task_id=args.get("task_id", ""),
+        track=args.get("track", 1),
     ))
+
+
+def _handle_music_stop(args: dict, **kw) -> str:
+    from .player import stop_playback, is_playing
+    status = is_playing()
+    if not status.get("playing"):
+        return json.dumps({"success": True, "message": "Nothing is currently playing"})
+    result = stop_playback()
+    return json.dumps(result)
+
+
+def _handle_music_delete(args: dict, **kw) -> str:
+    manager = _get_manager()
+    task_id = args.get("task_id", "")
+    track = args.get("track")
+    permanent = args.get("permanent", False)
+
+    if not task_id:
+        return json.dumps({"success": False, "error": "task_id is required"})
+
+    if track is not None:
+        # Single track operation
+        if permanent:
+            result = manager.delete_track(task_id, track)
+        else:
+            result = manager.archive_track(task_id, track)
+    else:
+        # Whole task
+        if permanent:
+            result = manager.delete_task(task_id)
+        else:
+            result = manager.archive_task(task_id)
+
+    return json.dumps(result)
 
 
 def _handle_midi_create(args: dict, **kw) -> str:
@@ -334,9 +392,11 @@ def _handle_music_compose(args: dict, **kw) -> str:
                 "audio_file": task.audio_file,
                 "title": task.title,
                 "duration": task.duration,
+                "track_count": task.track_count,
+                "tracks": result.get("tracks", []),
                 "audio_influence": audio_influence,
                 "style": style,
-                "message": f"Composition complete: {task.title}",
+                "message": f"Composition complete: {task.title} ({task.track_count} tracks)",
             })
         else:
             return json.dumps({
@@ -448,7 +508,10 @@ TOOL_SCHEMAS = {
     },
     "music_result": {
         "name": "music_result",
-        "description": "Get the result of a completed music generation — audio file path, URL, title, duration.",
+        "description": (
+            "Get the result of a completed music generation — audio file path, URL, "
+            "title, duration, and all tracks."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -476,13 +539,17 @@ TOOL_SCHEMAS = {
     },
     "music_favorite": {
         "name": "music_favorite",
-        "description": "Toggle or set favorite status for a song.",
+        "description": "Toggle or set favorite status for a song or specific track.",
         "parameters": {
             "type": "object",
             "properties": {
                 "task_id": {
                     "type": "string",
                     "description": "The task ID of the song to favorite",
+                },
+                "track": {
+                    "type": "integer",
+                    "description": "1-indexed track number to favorite. Omit to favorite the whole song.",
                 },
                 "favorite": {
                     "type": "boolean",
@@ -539,13 +606,55 @@ TOOL_SCHEMAS = {
     },
     "music_play": {
         "name": "music_play",
-        "description": "Play a song — increments play count and returns the audio file path.",
+        "description": (
+            "Play a song — plays audio locally via mpg123 (or similar), auto-stops "
+            "any currently playing track. Returns the audio file path."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
                 "task_id": {
                     "type": "string",
                     "description": "The task ID of the song to play",
+                },
+                "track": {
+                    "type": "integer",
+                    "description": "Which track to play, 1-indexed (default: 1). Suno generates 2 tracks per song.",
+                },
+            },
+            "required": ["task_id"],
+        },
+    },
+    "music_stop": {
+        "name": "music_stop",
+        "description": "Stop the currently playing audio track.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    "music_delete": {
+        "name": "music_delete",
+        "description": (
+            "Archive or permanently delete a song or specific track. "
+            "By default archives (moves to archive folder). "
+            "Use permanent=True to delete files from disk."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "The task ID of the song",
+                },
+                "track": {
+                    "type": "integer",
+                    "description": "1-indexed track number. Omit to archive/delete all tracks.",
+                },
+                "permanent": {
+                    "type": "boolean",
+                    "description": "If True, permanently delete files. If False (default), move to archive.",
                 },
             },
             "required": ["task_id"],
@@ -662,6 +771,8 @@ TOOL_HANDLERS = {
     "music_library": _handle_music_library,
     "music_search": _handle_music_search,
     "music_play": _handle_music_play,
+    "music_stop": _handle_music_stop,
+    "music_delete": _handle_music_delete,
     "midi_create": _handle_midi_create,
     "music_compose": _handle_music_compose,
 }
@@ -681,6 +792,9 @@ def register(ctx):
         # midi_create doesn't need SUNO_API_KEY
         if name == "midi_create":
             check_fn = _check_midi_available
+            requires_env = []
+        elif name in ("music_stop",):
+            check_fn = _check_always
             requires_env = []
         else:
             check_fn = _check_suno_available
