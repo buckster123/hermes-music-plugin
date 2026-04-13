@@ -90,7 +90,7 @@ pytest
 
 - Ported from [ApexAurum](https://github.com/buckster123/ApexAurum) music pipeline
 - Powered by [Suno AI](https://suno.ai) via [sunoapi.org](https://sunoapi.org)
-- Built for [Hermes Agent](https://github.com/NousResearch/hermes-agent) by [Nous Research](https://nousresearch.com)
+- Built for [Hermes Agent](https://github.com/NousResearch/hermes-agent) by Hermes (opus 4.6) & Andre
 
 ## License
 
